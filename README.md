@@ -1,211 +1,299 @@
-# java-jar-dependency-test
+# tigergate-java-ant
 
-A deliberately **legacy** Java web application used as a test fixture for SCA / SBOM scanners.
+A **legacy Java web application** used as a reproduction fixture for a TigerGate SCA/SBOM gap.
 
-Its dependencies are **committed directly as JAR files** under `Web/WEB-INF/lib/` instead of
-being declared in a package manifest. There is **no `pom.xml`**, **no `build.gradle`**, and
+Its dependencies are **committed directly as 41 JAR files** under `Web/WEB-INF/lib/` instead of
+being declared in a package manifest. There is **no `pom.xml`**, **no Gradle build script**, and
 **no lockfile of any kind**. The JARs *are* the dependency manifest.
 
-This layout is common in older Ant/Eclipse WTP projects, and it is exactly the shape that
-manifest-driven dependency scanning tends to miss.
-
-The repository also carries **deliberately vulnerable source code** and **planted fake
-credentials**, so the same checkout exercises SCA, SBOM, SAST and secret scanning in one pass.
+This mirrors a real customer repository: an old Ant/Eclipse WTP project where third-party
+libraries were downloaded once and checked into version control.
 
 > **Warning**
-> Every weakness here is intentional and every credential is fabricated. Nothing in this
+> Everything vulnerable here is intentional and every credential is fabricated. Nothing in this
 > repository authenticates to anything, and none of this code should be copied anywhere.
 
-## Why this repository exists
+## The bug being reproduced
 
-The purpose is to test whether a security scanner can detect vulnerabilities in:
+TigerGate runs `trivy fs` on the repository. `trivy fs` discovers Java components by parsing
+dependency **manifests** (`pom.xml`, `build.gradle`, `gradle.lockfile`). It does **not** open
+committed `.jar` files. A project with no manifest therefore produces an empty SBOM and zero
+Java vulnerabilities — not because it is clean, but because nothing told the scanner where to look.
 
 ```text
-Web/WEB-INF/lib/*.jar
+41 JAR files exist            Same repository
+        |                             |
+   No pom.xml                         |
+   No Gradle files                    |
+        |                             |
+     trivy fs                    trivy rootfs
+        |                             |
+  JARs not inspected           JAR analysis runs
+        |                             |
+  Empty Java SBOM             41 Maven components
+        |                             |
+  0 Java vulnerabilities       77 vulnerabilities
 ```
 
-Many scanners discover Java components by parsing dependency manifests (`pom.xml`,
-`build.gradle`, `gradle.lockfile`). When a project has none, those scanners report
-**zero Java components and zero vulnerabilities** — not because the project is clean, but
-because nothing told them where to look. A scanner that inspects JAR files themselves will
-instead identify the components below and report their published CVEs.
+### Observed results
 
-Concretely, this fixture reproduces a TigerGate issue where `trivy fs` reports no Java
-components while `trivy rootfs` identifies the committed JARs.
+Measured on Trivy **0.68.1**, vulnerability DB version 2 (updated 2026-09-30), working tree clean
+(`ant clean` run first):
 
-## Dependencies (committed, intentionally outdated)
-
-| File in `Web/WEB-INF/lib/` | Maven coordinates | How the version is discoverable |
+| | `trivy fs .` | `trivy rootfs .` |
 | --- | --- | --- |
-| `poi-3.11-beta2.jar` | `org.apache.poi:poi:3.11-beta2` | Filename + `MANIFEST.MF` (`Implementation-Version`) |
-| `commons-collections-3.2.1.jar` | `commons-collections:commons-collections:3.2.1` | Embedded `META-INF/maven/.../pom.properties` |
-| `commons-lang-2.6.jar` | `commons-lang:commons-lang:2.6` | Embedded `META-INF/maven/.../pom.properties` |
-| `commons-codec-1.12.jar` | `commons-codec:commons-codec:1.12` | Embedded `META-INF/maven/.../pom.properties` |
-| `jxl.jar` | `net.sourceforge.jexcelapi:jxl:2.6.12` | **Neither** — no `pom.properties`, no version in the filename, no version in `MANIFEST.MF` |
+| Java components in CycloneDX SBOM | **0** | **41** |
+| Java vulnerabilities | **0** | **77** |
+| CRITICAL / HIGH / MEDIUM / LOW | 0 / 0 / 0 / 0 | 11 / 33 / 30 / 3 |
+| Vulnerable packages | 0 | 24 |
+| Secret findings | 3 | 3 |
+| Java result target | *(absent)* | `Java` (type `jar`) |
 
-These are unmodified artifacts downloaded from Maven Central. SHA-1 digests:
+Both scans read the **same directory**. The only difference is the subcommand.
+
+Critical CVEs that `trivy fs` misses entirely and `trivy rootfs` reports:
 
 ```text
-5b89faba0fd879a6a7eca16e81a47a2fd008738a  poi-3.11-beta2.jar
-761ea405b9b37ced573d2df0d1e3a4e0f9edc668  commons-collections-3.2.1.jar
-0ce1edb914c94ebc388f086c6827e8bdeec71ac2  commons-lang-2.6.jar
-47a28ef1ed31eb182b44e15d49300dee5fadcf6a  commons-codec-1.12.jar
-7faf62e0697f7a88954622dfe8c8de33ed142ac7  jxl.jar
+CVE-2021-44228  org.apache.logging.log4j:log4j-core@2.14.1   (Log4Shell)
+CVE-2021-45046  org.apache.logging.log4j:log4j-core@2.14.1
+CVE-2022-42889  org.apache.commons:commons-text@1.9          (Text4Shell)
+CVE-2015-7501   commons-collections:commons-collections@3.2.1 (deserialization RCE)
+CVE-2016-1000027 org.springframework:spring-web@5.3.18
+CVE-2016-1000031 commons-fileupload:commons-fileupload@1.3.1
+CVE-2019-17571  log4j:log4j@1.2.17
+CVE-2022-23305  log4j:log4j@1.2.17
+CVE-2022-23307  log4j:log4j@1.2.17
+CVE-2020-10683  dom4j:dom4j@1.6.1
+CVE-2021-23926  org.apache.xmlbeans:xmlbeans@2.6.0
 ```
 
-### The `jxl.jar` case
+## Reproduction commands
 
-`jxl.jar` is stored **without a version in its filename**, and the artifact carries no
-embedded Maven metadata. Filename heuristics and manifest parsing both fail on it. Identifying
-it as `net.sourceforge.jexcelapi:jxl:2.6.12` requires a digest lookup against an artifact index
-(e.g. matching the SHA-1 above). It is included specifically to test that fallback path.
+Run these from the repository root. Run `ant clean` first so `build/` and `dist/` do not add a
+WAR that changes the component counts.
 
-Versions were chosen to be old enough to carry published CVEs — notably
-`commons-collections:3.2.1` (unsafe deserialization) and `org.apache.poi:poi:3.11-beta2`.
-Nothing here should be used as a dependency baseline for real work.
+```bash
+ant clean
+
+# TigerGate-like scan: finds no Java components
+trivy fs --quiet --format json . \
+  | jq -c '[.Results[]? | {Target, Type, vulns: (.Vulnerabilities|length)}]'
+
+trivy fs --quiet --format cyclonedx . \
+  | jq -c '[.components[]? | .purl]'
+
+# Comparison scan: finds the committed JARs
+trivy rootfs --quiet --format json . \
+  | jq -c '[.Results[]? | {Target, Type, vulns: (.Vulnerabilities|length)}]'
+
+trivy rootfs --quiet --format cyclonedx . \
+  | jq -c '[.components[]? | .purl]'
+```
+
+Observed output:
+
+```console
+$ trivy fs --quiet --format json . | jq -c '[.Results[]? | {Target, Type, vulns: (.Vulnerabilities|length)}]'
+[{"Target":"config/application.properties","Type":null,"vulns":0},{"Target":"config/aws-credentials","Type":null,"vulns":0},{"Target":"config/id_rsa","Type":null,"vulns":0}]
+
+$ trivy fs --quiet --format cyclonedx . | jq -c '[.components[]? | .purl]'
+[]
+
+$ trivy rootfs --quiet --format json . | jq -c '[.Results[]? | {Target, Type, vulns: (.Vulnerabilities|length)}]'
+[{"Target":"Java","Type":"jar","vulns":77},{"Target":"config/application.properties","Type":null,"vulns":0},{"Target":"config/aws-credentials","Type":null,"vulns":0},{"Target":"config/id_rsa","Type":null,"vulns":0}]
+
+$ trivy rootfs --quiet --format cyclonedx . | jq '[.components[]? | .purl] | length'
+41
+```
+
+Note that `trivy fs` still reports the three planted **secret** findings. Secret scanning walks
+files directly, so it is unaffected by the missing manifest. Only the **Java component**
+discovery is empty, which is precisely the gap.
+
+## Committed dependencies
+
+All 41 JARs are unmodified artifacts from Maven Central, deliberately including outdated
+versions with published CVEs.
+
+| # | JAR file | Maven coordinates |
+| --- | --- | --- |
+| 1 | `commons-beanutils-1.9.3.jar` | `pkg:maven/commons-beanutils/commons-beanutils@1.9.3` |
+| 2 | `commons-codec-1.12.jar` | `pkg:maven/commons-codec/commons-codec@1.12` |
+| 3 | `commons-collections-3.2.1.jar` | `pkg:maven/commons-collections/commons-collections@3.2.1` |
+| 4 | `commons-compress-1.20.jar` | `pkg:maven/org.apache.commons/commons-compress@1.20` |
+| 5 | `commons-dbcp2-2.9.0.jar` | `pkg:maven/org.apache.commons/commons-dbcp2@2.9.0` |
+| 6 | `commons-fileupload-1.3.1.jar` | `pkg:maven/commons-fileupload/commons-fileupload@1.3.1` |
+| 7 | `commons-io-2.6.jar` | `pkg:maven/commons-io/commons-io@2.6` |
+| 8 | `commons-lang-2.6.jar` | `pkg:maven/commons-lang/commons-lang@2.6` |
+| 9 | `commons-logging-1.2.jar` | `pkg:maven/commons-logging/commons-logging@1.2` |
+| 10 | `commons-pool2-2.12.0.jar` | `pkg:maven/org.apache.commons/commons-pool2@2.12.0` |
+| 11 | `commons-text-1.9.jar` | `pkg:maven/org.apache.commons/commons-text@1.9` |
+| 12 | `dom4j-1.6.1.jar` | `pkg:maven/dom4j/dom4j@1.6.1` |
+| 13 | `gson-2.8.5.jar` | `pkg:maven/com.google.code.gson/gson@2.8.5` |
+| 14 | `guava-19.0.jar` | `pkg:maven/com.google.guava/guava@19.0` |
+| 15 | `httpclient-4.5.13.jar` | `pkg:maven/org.apache.httpcomponents/httpclient@4.5.13` |
+| 16 | `httpcore-4.4.13.jar` | `pkg:maven/org.apache.httpcomponents/httpcore@4.4.13` |
+| 17 | `jackson-annotations-2.13.5.jar` | `pkg:maven/com.fasterxml.jackson.core/jackson-annotations@2.13.5` |
+| 18 | `jackson-core-2.13.5.jar` | `pkg:maven/com.fasterxml.jackson.core/jackson-core@2.13.5` |
+| 19 | `jackson-databind-2.13.5.jar` | `pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.13.5` |
+| 20 | `jackson-datatype-jsr310-2.13.5.jar` | `pkg:maven/com.fasterxml.jackson.datatype/jackson-datatype-jsr310@2.13.5` |
+| 21 | `jakarta.transaction-api-1.3.1.jar` | `pkg:maven/jakarta.transaction/jakarta.transaction-api@1.3.1` |
+| 22 | `javax.servlet-api-3.1.0.jar` | `pkg:maven/javax.servlet/javax.servlet-api@3.1.0` |
+| 23 | `jcl-over-slf4j-1.7.36.jar` | `pkg:maven/org.slf4j/jcl-over-slf4j@1.7.36` |
+| 24 | `jstl-1.2.jar` | `pkg:maven/javax.servlet/jstl@1.2` |
+| 25 | `jxl.jar` | `pkg:maven/net.sourceforge.jexcelapi/jxl@2.6.12` |
+| 26 | `log4j-1.2.17.jar` | `pkg:maven/log4j/log4j@1.2.17` |
+| 27 | `log4j-api-2.14.1.jar` | `pkg:maven/org.apache.logging.log4j/log4j-api@2.14.1` |
+| 28 | `log4j-core-2.14.1.jar` | `pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1` |
+| 29 | `lombok.jar` | `pkg:maven/org.projectlombok/lombok@1.18.30` |
+| 30 | `mysql-connector-java-5.1.49.jar` | `pkg:maven/mysql/mysql-connector-java@5.1.49` |
+| 31 | `poi-3.11-beta2.jar` | `pkg:maven/org.apache.poi/poi@3.11-beta2` |
+| 32 | `poi-ooxml-3.11-beta2.jar` | `pkg:maven/org.apache.poi/poi-ooxml@3.11-beta2` |
+| 33 | `poi-ooxml-schemas-3.11-beta2.jar` | `pkg:maven/org.apache.poi/poi-ooxml-schemas@3.11-beta2` |
+| 34 | `slf4j-api-1.7.36.jar` | `pkg:maven/org.slf4j/slf4j-api@1.7.36` |
+| 35 | `snakeyaml-1.30.jar` | `pkg:maven/org.yaml/snakeyaml@1.30` |
+| 36 | `spring-beans-5.3.18.jar` | `pkg:maven/org.springframework/spring-beans@5.3.18` |
+| 37 | `spring-context-5.3.18.jar` | `pkg:maven/org.springframework/spring-context@5.3.18` |
+| 38 | `spring-core-5.3.18.jar` | `pkg:maven/org.springframework/spring-core@5.3.18` |
+| 39 | `spring-web-5.3.18.jar` | `pkg:maven/org.springframework/spring-web@5.3.18` |
+| 40 | `stax-api-1.0.1.jar` | `pkg:maven/stax/stax-api@1.0.1` |
+| 41 | `xmlbeans-2.6.0.jar` | `pkg:maven/org.apache.xmlbeans/xmlbeans@2.6.0` |
+
+### JARs with no version in the filename
+
+Two entries are deliberately stored without a version, because the customer repository does the
+same and it is the hardest case for JAR identification:
+
+| File | Real coordinates | `pom.properties`? | Version in filename? |
+| --- | --- | --- | --- |
+| `jxl.jar` | `net.sourceforge.jexcelapi:jxl:2.6.12` | no | no |
+| `lombok.jar` | `org.projectlombok:lombok:1.18.30` | no | no |
+
+Neither filename heuristics nor manifest parsing can identify these. Trivy resolves them by
+hashing the archive and looking the digest up against Maven Central, which requires network
+access — in an air-gapped scan expect both to drop out of the `rootfs` results.
 
 ## Project layout
 
 ```text
-java-jar-dependency-test/
+tigergate-java-ant/
 ├── src/com/example/
-│   ├── App.java                    # actually calls into all five libraries
+│   ├── App.java                    # POI, JExcelAPI, Commons Codec/Lang/Collections
+│   ├── ReportServlet.java          # Servlet API, Log4j, Commons IO, Jackson
 │   ├── VulnerableDao.java          # SAST: SQL injection, hardcoded DB credentials
 │   ├── InsecureCrypto.java         # SAST: MD5/SHA-1, DES & AES-ECB, java.util.Random
 │   ├── UnsafeIO.java               # SAST: command injection, path traversal, XXE, deserialization
 │   └── ApiClient.java              # SAST + secrets: hardcoded tokens, cleartext HTTP
 ├── config/                         # secrets fixture
-│   ├── application.properties      # DB, AWS, GitHub, Slack, Stripe, SendGrid, Twilio, LDAP
-│   ├── aws-credentials             # AWS credential file format
-│   └── id_rsa                      # RSA private key (PKCS#1 PEM)
+│   ├── application.properties
+│   ├── aws-credentials
+│   └── id_rsa
 ├── Web/
 │   ├── index.html
 │   └── WEB-INF/
 │       ├── web.xml
-│       └── lib/                    # the dependency source
-│           ├── poi-3.11-beta2.jar
-│           ├── commons-collections-3.2.1.jar
-│           ├── commons-lang-2.6.jar
-│           ├── commons-codec-1.12.jar
-│           └── jxl.jar
+│       └── lib/                    # 41 committed JARs - the dependency source
 ├── build.xml                       # Apache Ant
-├── .classpath                      # Eclipse
+├── .classpath                      # Eclipse, lists all 41 JARs
 ├── .project                        # Eclipse
 ├── .gitignore
 └── README.md
 ```
 
-`App.java` is not a dead placeholder — it writes a BIFF8 workbook with POI, reads it back with
-JExcelAPI, hashes with commons-codec, and uses the pre-generics commons-collections 3.2.1 and
-commons-lang 2.6 APIs. The libraries are genuinely linked and exercised.
+## Building with Ant
 
-Note that `App` is a plain class with a `main` method rather than a servlet. Compiling a servlet
-would require adding `servlet-api.jar` to `WEB-INF/lib`, which would put an extra component in
-the fixture's dependency set. The five JARs are kept exact so scan results stay easy to compare.
+Requires a JDK and Apache Ant. **No network access is needed** — the build resolves nothing and
+downloads nothing. `Web/WEB-INF/lib/*.jar` is the entire compile classpath.
+
+```bash
+ant clean       # remove build/ and dist/
+ant classpath   # print the JARs used as the dependency source
+ant compile     # compile to build/classes
+ant war         # package dist/java-jar-dependency-test.war
+ant run         # run com.example.App to prove the libraries are linked
+ant             # default: compile + war
+```
+
+`ant war` packages the JARs into `WEB-INF/lib/` of the WAR, so the same components are present
+whether a scanner looks at the source tree or the packaged artifact.
+
+## Validation
+
+```bash
+# Build descriptors present - should list only build.xml and .classpath
+find . -name .git -prune -o \( -name pom.xml -o -name "build.gradle*" \
+  -o -name "settings.gradle*" -o -name "*.lockfile" -o -name build.xml \
+  -o -name ivy.xml -o -name .classpath \) -print
+
+# Must return NOTHING
+find . -name .git -prune -o \( -name "pom.xml" -o -name "build.gradle" \
+  -o -name "build.gradle.kts" -o -name "settings.gradle" \
+  -o -name "settings.gradle.kts" -o -name "gradle.lockfile" \
+  -o -name "gradlew" -o -name "gradlew.bat" \) -print
+
+# Must print 41
+find . -name .git -prune -o \( -name "*.jar" -o -name "*.war" -o -name "*.ear" \) -print | wc -l
+
+# All must be valid archives
+for j in Web/WEB-INF/lib/*.jar; do unzip -t "$j" >/dev/null && echo "OK   $j"; done
+```
+
+If the second command prints anything, the fixture is contaminated and no longer tests the
+JAR-only case.
 
 ## Planted SAST findings
 
-All of these are in `src/com/example/` and all of them compile, so a scanner that builds the
-project sees them on a real classpath.
+All in `src/com/example/`, all compiling against the committed JARs.
 
 | Weakness | CWE | Location |
 | --- | --- | --- |
-| SQL injection (concatenated `SELECT`) | CWE-89 | `VulnerableDao.findUnitsByRegion` |
-| SQL injection (concatenated `UPDATE`) | CWE-89 | `VulnerableDao.renameRegion` |
-| Hardcoded database credentials | CWE-798 | `VulnerableDao` constants |
-| Credentials written to stdout | CWE-532 | `VulnerableDao.connect`, `ApiClient.basicAuthHeader` |
-| OS command injection via `sh -c` | CWE-78 | `UnsafeIO.convertUpload` |
-| OS command injection via `exec(String)` | CWE-78 | `UnsafeIO.archiveRegion` |
+| SQL injection (`SELECT` and `UPDATE`) | CWE-89 | `VulnerableDao` |
+| Hardcoded database credentials | CWE-798 | `VulnerableDao` |
+| Credentials written to stdout | CWE-532 | `VulnerableDao`, `ApiClient` |
+| OS command injection | CWE-78 | `UnsafeIO.convertUpload`, `archiveRegion` |
 | Path traversal | CWE-22 | `UnsafeIO.readUpload` |
-| XXE (external entities enabled) | CWE-611 | `UnsafeIO.parseConfig` |
+| XXE | CWE-611 | `UnsafeIO.parseConfig` |
 | Unsafe Java deserialization | CWE-502 | `UnsafeIO.loadSession` |
-| TLS certificate + hostname verification disabled | CWE-295 | `UnsafeIO.trustEverything` |
-| Insecure temp file, world-writable | CWE-377 / CWE-732 | `UnsafeIO.stageExport` |
-| MD5 / SHA-1 password hashing | CWE-327 / CWE-916 | `InsecureCrypto.hashPassword`, `legacyFingerprint` |
-| DES and AES in ECB mode | CWE-327 | `InsecureCrypto.encryptToken`, `encryptRecord` |
-| Hardcoded encryption key | CWE-321 | `InsecureCrypto.DES_KEY` |
-| `java.util.Random` for session tokens | CWE-330 / CWE-338 | `InsecureCrypto.newSessionToken` |
-| Hardcoded API tokens | CWE-798 | `ApiClient` constants |
-| Credentials in a URL | CWE-798 | `ApiClient.LEGACY_ENDPOINT` |
-| Cleartext HTTP for authenticated calls | CWE-319 | `ApiClient.pushReport` |
+| TLS verification disabled | CWE-295 | `UnsafeIO.trustEverything` |
+| Insecure temp file | CWE-377 / CWE-732 | `UnsafeIO.stageExport` |
+| MD5 / SHA-1 password hashing | CWE-327 / CWE-916 | `InsecureCrypto` |
+| DES and AES-ECB, hardcoded key | CWE-327 / CWE-321 | `InsecureCrypto` |
+| `java.util.Random` for tokens | CWE-330 / CWE-338 | `InsecureCrypto.newSessionToken` |
+| Hardcoded API tokens, creds in URL | CWE-798 | `ApiClient` |
+| Cleartext HTTP for authenticated calls | CWE-319 | `ApiClient` |
 
-`UnsafeIO.loadSession` is the interesting cross-scanner case: on its own it is a SAST finding,
-but it is genuinely exploitable *because* SCA-visible `commons-collections:3.2.1` is on the
-classpath and supplies a published gadget chain. A report that surfaces both should correlate them.
+`UnsafeIO.loadSession` is the cross-scanner case: a CWE-502 SAST finding that is genuinely
+exploitable *because* SCA-visible `commons-collections:3.2.1` supplies a published gadget chain.
+A scanner that surfaces both should correlate them.
 
 ## Planted secrets
 
-Fabricated credentials live both in `config/` and inline in Java source, because some scanners
-only walk config files and some only walk source.
+Fabricated credentials live in `config/` and inline in Java source, because some scanners only
+walk config files and some only walk source.
 
 | Secret type | Location |
 | --- | --- |
 | AWS access key ID + secret (2 profiles) | `config/aws-credentials`, `config/application.properties` |
 | RSA private key, PKCS#1 PEM | `config/id_rsa` |
-| GitHub personal access token (`ghp_`) | `config/application.properties`, `ApiClient` |
-| Slack bot token (`xoxb-`) | `config/application.properties`, `ApiClient` |
-| Stripe API key (`sk_test_`) | `config/application.properties`, `ApiClient` |
-| SendGrid API key (`SG.`) | `config/application.properties` |
-| Twilio auth token | `config/application.properties` |
+| GitHub PAT, Slack token, Stripe key, SendGrid key, Twilio token | `config/application.properties`, `ApiClient` |
 | JDBC / LDAP / service-account passwords | `config/application.properties`, `VulnerableDao` |
-| JWT | `ApiClient.SESSION_JWT` |
-| HTTP Basic credentials in a URL | `ApiClient.LEGACY_ENDPOINT` |
+| JWT, HTTP Basic credentials in a URL | `ApiClient` |
 
-`config/id_rsa` is a throwaway 2048-bit key generated for this fixture and used by nothing. The
-`sk_test_` Stripe prefix is deliberate — `sk_live_` would look real enough to draw provider-side
-validation traffic from platform secret scanners.
+`config/id_rsa` is a throwaway key generated for this fixture and used by nothing.
 
-### Pushing this to a hosted forge
+### Pushing to a hosted forge
 
-Because these patterns are designed to be detected, push protection may **block your first
-push** and platform secret scanning will likely open alerts. That is the fixture working as
-intended. You will need to allow the push explicitly, or keep the repository private with push
-protection disabled for it.
-
-## Building with Ant
-
-Requires a JDK and Apache Ant. No network access is needed — the build resolves nothing and
-downloads nothing; `Web/WEB-INF/lib/*.jar` is the entire compile classpath.
-
-```bash
-ant classpath   # print the JARs used as the dependency source
-ant compile     # compile to build/classes
-ant war         # package dist/java-jar-dependency-test.war
-ant run         # run com.example.App to prove the libraries are linked
-ant clean       # remove build/ and dist/
-```
-
-`ant war` produces a WAR with the JARs under `WEB-INF/lib/`, so the same components are present
-whether a scanner looks at the source tree or at the packaged artifact.
-
-## Validation
-
-Confirm the JARs are present and that no Maven or Gradle descriptor has crept in:
-
-```bash
-find . -name "*.jar"
-find . -name "pom.xml" -o -name "build.gradle" -o -name "settings.gradle" -o -name "gradle.lockfile"
-```
-
-The first must list five JARs. **The second must return nothing** — if it prints anything, the
-fixture has been contaminated and is no longer testing the JAR-only case.
-
-Confirm the JARs are real archives rather than placeholders:
-
-```bash
-for j in Web/WEB-INF/lib/*.jar; do unzip -t "$j" >/dev/null && echo "OK   $j"; done
-sha1sum Web/WEB-INF/lib/*.jar
-unzip -p Web/WEB-INF/lib/commons-lang-2.6.jar 'META-INF/maven/*/*/pom.properties'
-```
+These patterns are designed to be detected, so **GitHub push protection will block the first
+push** and secret scanning will open alerts. That is the fixture working as intended. Allow each
+flagged secret through the unblock URL GitHub prints, or keep the repository private.
 
 ## Maintaining the fixture
 
-- Do not add `pom.xml`, any Gradle file, or any lockfile.
-- Do not rename or upgrade the JARs; expected findings are tied to these exact versions.
-- Keep `jxl.jar` named without its version — that is the point of including it.
-- Do not "fix" anything in `config/` or in the four vulnerable classes; they are the expected
-  SAST and secret findings.
-- If you rotate `config/id_rsa`, generate a fresh throwaway key rather than pasting a real one.
-- `build/` and `dist/` are gitignored. The JARs under `Web/WEB-INF/lib/` are **source**, not
-  build output, and must stay committed.
-# tigergate-java-ant
+- Do not add `pom.xml`, any Gradle file, or any lockfile. That is what makes the bug reproduce.
+- Do not add custom scanning scripts or SBOM files to make SCA work; this repo only demonstrates
+  the existing behaviour.
+- Do not upgrade the JARs; the expected findings are tied to these exact versions.
+- Keep `jxl.jar` and `lombok.jar` named without versions.
+- Do not "fix" `config/` or the four vulnerable classes; they are the expected SAST and secret findings.
+- `build/` and `dist/` are gitignored. The JARs under `Web/WEB-INF/lib/` are **source**, not build
+  output, and must stay committed.

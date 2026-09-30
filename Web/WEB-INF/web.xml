@@ -12,6 +12,15 @@
         under WEB-INF/lib rather than declared in a Maven or Gradle descriptor.
     </description>
 
+    <servlet>
+        <servlet-name>ReportServlet</servlet-name>
+        <servlet-class>com.example.ReportServlet</servlet-class>
+    </servlet>
+    <servlet-mapping>
+        <servlet-name>ReportServlet</servlet-name>
+        <url-pattern>/report</url-pattern>
+    </servlet-mapping>
+
     <welcome-file-list>
         <welcome-file>index.html</welcome-file>
     </welcome-file-list>
