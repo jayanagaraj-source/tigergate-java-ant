@@ -9,6 +9,13 @@ being declared in a package manifest. There is **no `pom.xml`**, **no `build.gra
 This layout is common in older Ant/Eclipse WTP projects, and it is exactly the shape that
 manifest-driven dependency scanning tends to miss.
 
+The repository also carries **deliberately vulnerable source code** and **planted fake
+credentials**, so the same checkout exercises SCA, SBOM, SAST and secret scanning in one pass.
+
+> **Warning**
+> Every weakness here is intentional and every credential is fabricated. Nothing in this
+> repository authenticates to anything, and none of this code should be copied anywhere.
+
 ## Why this repository exists
 
 The purpose is to test whether a security scanner can detect vulnerabilities in:
@@ -61,8 +68,16 @@ Nothing here should be used as a dependency baseline for real work.
 
 ```text
 java-jar-dependency-test/
-├── src/
-│   └── com/example/App.java        # actually calls into all five libraries
+├── src/com/example/
+│   ├── App.java                    # actually calls into all five libraries
+│   ├── VulnerableDao.java          # SAST: SQL injection, hardcoded DB credentials
+│   ├── InsecureCrypto.java         # SAST: MD5/SHA-1, DES & AES-ECB, java.util.Random
+│   ├── UnsafeIO.java               # SAST: command injection, path traversal, XXE, deserialization
+│   └── ApiClient.java              # SAST + secrets: hardcoded tokens, cleartext HTTP
+├── config/                         # secrets fixture
+│   ├── application.properties      # DB, AWS, GitHub, Slack, Stripe, SendGrid, Twilio, LDAP
+│   ├── aws-credentials             # AWS credential file format
+│   └── id_rsa                      # RSA private key (PKCS#1 PEM)
 ├── Web/
 │   ├── index.html
 │   └── WEB-INF/
@@ -87,6 +102,65 @@ commons-lang 2.6 APIs. The libraries are genuinely linked and exercised.
 Note that `App` is a plain class with a `main` method rather than a servlet. Compiling a servlet
 would require adding `servlet-api.jar` to `WEB-INF/lib`, which would put an extra component in
 the fixture's dependency set. The five JARs are kept exact so scan results stay easy to compare.
+
+## Planted SAST findings
+
+All of these are in `src/com/example/` and all of them compile, so a scanner that builds the
+project sees them on a real classpath.
+
+| Weakness | CWE | Location |
+| --- | --- | --- |
+| SQL injection (concatenated `SELECT`) | CWE-89 | `VulnerableDao.findUnitsByRegion` |
+| SQL injection (concatenated `UPDATE`) | CWE-89 | `VulnerableDao.renameRegion` |
+| Hardcoded database credentials | CWE-798 | `VulnerableDao` constants |
+| Credentials written to stdout | CWE-532 | `VulnerableDao.connect`, `ApiClient.basicAuthHeader` |
+| OS command injection via `sh -c` | CWE-78 | `UnsafeIO.convertUpload` |
+| OS command injection via `exec(String)` | CWE-78 | `UnsafeIO.archiveRegion` |
+| Path traversal | CWE-22 | `UnsafeIO.readUpload` |
+| XXE (external entities enabled) | CWE-611 | `UnsafeIO.parseConfig` |
+| Unsafe Java deserialization | CWE-502 | `UnsafeIO.loadSession` |
+| TLS certificate + hostname verification disabled | CWE-295 | `UnsafeIO.trustEverything` |
+| Insecure temp file, world-writable | CWE-377 / CWE-732 | `UnsafeIO.stageExport` |
+| MD5 / SHA-1 password hashing | CWE-327 / CWE-916 | `InsecureCrypto.hashPassword`, `legacyFingerprint` |
+| DES and AES in ECB mode | CWE-327 | `InsecureCrypto.encryptToken`, `encryptRecord` |
+| Hardcoded encryption key | CWE-321 | `InsecureCrypto.DES_KEY` |
+| `java.util.Random` for session tokens | CWE-330 / CWE-338 | `InsecureCrypto.newSessionToken` |
+| Hardcoded API tokens | CWE-798 | `ApiClient` constants |
+| Credentials in a URL | CWE-798 | `ApiClient.LEGACY_ENDPOINT` |
+| Cleartext HTTP for authenticated calls | CWE-319 | `ApiClient.pushReport` |
+
+`UnsafeIO.loadSession` is the interesting cross-scanner case: on its own it is a SAST finding,
+but it is genuinely exploitable *because* SCA-visible `commons-collections:3.2.1` is on the
+classpath and supplies a published gadget chain. A report that surfaces both should correlate them.
+
+## Planted secrets
+
+Fabricated credentials live both in `config/` and inline in Java source, because some scanners
+only walk config files and some only walk source.
+
+| Secret type | Location |
+| --- | --- |
+| AWS access key ID + secret (2 profiles) | `config/aws-credentials`, `config/application.properties` |
+| RSA private key, PKCS#1 PEM | `config/id_rsa` |
+| GitHub personal access token (`ghp_`) | `config/application.properties`, `ApiClient` |
+| Slack bot token (`xoxb-`) | `config/application.properties`, `ApiClient` |
+| Stripe API key (`sk_test_`) | `config/application.properties`, `ApiClient` |
+| SendGrid API key (`SG.`) | `config/application.properties` |
+| Twilio auth token | `config/application.properties` |
+| JDBC / LDAP / service-account passwords | `config/application.properties`, `VulnerableDao` |
+| JWT | `ApiClient.SESSION_JWT` |
+| HTTP Basic credentials in a URL | `ApiClient.LEGACY_ENDPOINT` |
+
+`config/id_rsa` is a throwaway 2048-bit key generated for this fixture and used by nothing. The
+`sk_test_` Stripe prefix is deliberate — `sk_live_` would look real enough to draw provider-side
+validation traffic from platform secret scanners.
+
+### Pushing this to a hosted forge
+
+Because these patterns are designed to be detected, push protection may **block your first
+push** and platform secret scanning will likely open alerts. That is the fixture working as
+intended. You will need to allow the push explicitly, or keep the repository private with push
+protection disabled for it.
 
 ## Building with Ant
 
@@ -129,6 +203,9 @@ unzip -p Web/WEB-INF/lib/commons-lang-2.6.jar 'META-INF/maven/*/*/pom.properties
 - Do not add `pom.xml`, any Gradle file, or any lockfile.
 - Do not rename or upgrade the JARs; expected findings are tied to these exact versions.
 - Keep `jxl.jar` named without its version — that is the point of including it.
+- Do not "fix" anything in `config/` or in the four vulnerable classes; they are the expected
+  SAST and secret findings.
+- If you rotate `config/id_rsa`, generate a fresh throwaway key rather than pasting a real one.
 - `build/` and `dist/` are gitignored. The JARs under `Web/WEB-INF/lib/` are **source**, not
   build output, and must stay committed.
 # tigergate-java-ant
