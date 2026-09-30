@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Legacy Ant build. Dependencies are NOT resolved from a repository: the JAR
+  files committed under Web/WEB-INF/lib are the one and only dependency source.
+  There is deliberately no Maven (pom.xml) and no Gradle build script here.
+-->
+<project name="java-jar-dependency-test" default="war" basedir=".">
+
+    <property name="src.dir"     location="src"/>
+    <property name="web.dir"     location="Web"/>
+    <property name="lib.dir"     location="${web.dir}/WEB-INF/lib"/>
+    <property name="build.dir"   location="build"/>
+    <property name="classes.dir" location="${build.dir}/classes"/>
+    <property name="dist.dir"    location="dist"/>
+    <property name="war.file"    location="${dist.dir}/${ant.project.name}.war"/>
+
+    <property name="source.level" value="8"/>
+    <property name="target.level" value="8"/>
+
+    <!-- Compile classpath: every JAR committed in Web/WEB-INF/lib, nothing else. -->
+    <path id="compile.classpath">
+        <fileset dir="${lib.dir}">
+            <include name="**/*.jar"/>
+        </fileset>
+    </path>
+
+    <target name="init">
+        <mkdir dir="${classes.dir}"/>
+        <mkdir dir="${dist.dir}"/>
+    </target>
+
+    <target name="classpath" description="Print the JARs used as the dependency source">
+        <property name="compile.classpath.text" refid="compile.classpath"/>
+        <echo message="Compile classpath:${line.separator}${compile.classpath.text}"/>
+    </target>
+
+    <target name="compile" depends="init" description="Compile sources against the committed JARs">
+        <javac srcdir="${src.dir}"
+               destdir="${classes.dir}"
+               includeantruntime="false"
+               debug="true"
+               deprecation="false"
+               encoding="UTF-8"
+               source="${source.level}"
+               target="${target.level}">
+            <classpath refid="compile.classpath"/>
+            <compilerarg value="-Xlint:-options"/>
+        </javac>
+    </target>
+
+    <target name="war" depends="compile" description="Package a WAR containing the committed JARs">
+        <war destfile="${war.file}" webxml="${web.dir}/WEB-INF/web.xml" duplicate="fail">
+            <classes dir="${classes.dir}"/>
+            <lib dir="${lib.dir}">
+                <include name="**/*.jar"/>
+            </lib>
+            <fileset dir="${web.dir}">
+                <exclude name="WEB-INF/web.xml"/>
+                <exclude name="WEB-INF/lib/**"/>
+            </fileset>
+        </war>
+        <echo message="Built ${war.file}"/>
+    </target>
+
+    <target name="run" depends="compile" description="Run App against the committed JARs">
+        <java classname="com.example.App" fork="true" failonerror="true">
+            <classpath>
+                <pathelement location="${classes.dir}"/>
+                <path refid="compile.classpath"/>
+            </classpath>
+        </java>
+    </target>
+
+    <target name="clean" description="Remove build output">
+        <delete dir="${build.dir}"/>
+        <delete dir="${dist.dir}"/>
+    </target>
+
+    <target name="all" depends="clean,war"/>
+
+</project>

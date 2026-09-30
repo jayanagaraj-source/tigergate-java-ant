@@ -1,0 +1,5 @@
+# Ant build output. The JARs under Web/WEB-INF/lib are source, not build output,
+# and must stay committed for the SCA/SBOM fixture to work.
+build/
+dist/
+*.class

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<classpath>
+	<classpathentry kind="src" path="src"/>
+	<classpathentry kind="con" path="org.eclipse.jdt.launching.JRE_CONTAINER"/>
+	<classpathentry kind="lib" path="Web/WEB-INF/lib/poi-3.11-beta2.jar"/>
+	<classpathentry kind="lib" path="Web/WEB-INF/lib/commons-collections-3.2.1.jar"/>
+	<classpathentry kind="lib" path="Web/WEB-INF/lib/commons-lang-2.6.jar"/>
+	<classpathentry kind="lib" path="Web/WEB-INF/lib/commons-codec-1.12.jar"/>
+	<classpathentry kind="lib" path="Web/WEB-INF/lib/jxl.jar"/>
+	<classpathentry kind="output" path="build/classes"/>
+</classpath>
